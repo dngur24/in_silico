@@ -5,7 +5,7 @@ Data models for AntiTbPred results.
 from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional
+from typing import Optional, Any
 import csv
 import json
 from pathlib import Path
@@ -88,6 +88,7 @@ class PredictionResult:
     threshold: float = 0.0
     score: Optional[float] = None
     label: Optional[str] = None
+    properties : Optional[dict[str, Any]] = None
     raw_html: Optional[str] = field(default=None, repr=False)
     error: Optional[str] = None
 
@@ -103,12 +104,13 @@ class PredictionResult:
     def to_dict(self, include_raw_html: bool = False) -> dict:
         """Return a plain dictionary representation."""
         d = {
-            "peptide":   self.peptide,
-            "method":    self.method,
-            "threshold": self.threshold,
-            "score":     self.score,
-            "label":     self.label,
-            "error":     self.error,
+            "peptide":    self.peptide,
+            "method":     self.method,
+            "threshold":  self.threshold,
+            "score":      self.score,
+            "label":      self.label,
+            "properties": self.properties,
+            "error":      self.error,
         }
         if include_raw_html:
             d["raw_html"] = self.raw_html
@@ -146,11 +148,21 @@ class PredictionResult:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
 
-        fieldnames = ["peptide", "method", "threshold", "score", "label", "error"]
+        properties_keys = []
+        for r in results:
+            if r.properties:
+                for k in r.properties.keys():
+                    if k not in properties_keys:
+                        properties_keys.append(k)
+
+        fieldnames = ["peptide", "method", "threshold", "score", "label"] + properties_keys +["error"]
         with path.open("w", newline="", encoding=encoding) as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
             writer.writeheader()
             for r in results:
-                writer.writerow(r.to_dict())
+                row = r.to_dict()
+                if r.properties:
+                    row.update(r.properties)
+                writer.writerow(row)
 
         return path.resolve()

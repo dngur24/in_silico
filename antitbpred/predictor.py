@@ -98,6 +98,7 @@ class Predictor:
         post_submit_wait: float = 8.0,
         inter_request_delay: float = 3.0,
         headless: bool = True,
+        fields: Optional[list[str]] = None,
     ) -> None:
         self.method    = Method.resolve(method) if not isinstance(method, Method) else method
         self.threshold = threshold
@@ -105,6 +106,7 @@ class Predictor:
         self.post_submit_wait = post_submit_wait
         self.inter_request_delay = inter_request_delay
         self.headless  = headless
+        self.fields = fields
         self._parser   = Parser()
 
     # ------------------------------------------------------------------
@@ -149,13 +151,14 @@ class Predictor:
                 error=str(exc),
             )
 
-        score, label = self._parser.parse(html)
+        score, label, properties = self._parser.parse(html)
         result = PredictionResult(
             peptide=peptide,
             method=method_name,
             threshold=self.threshold,
             score=score,
             label=label,
+            properties=properties,
             raw_html=html,
         )
         logger.info("Predicted '%s' → label=%s score=%s", peptide, label, score)
@@ -261,6 +264,15 @@ class Predictor:
                 """
             )
             logger.debug("Set threshold: %s", threshold_str)
+
+            # Set the checkboxes for the requested fields on the form page
+            if self.fields:
+                page.evaluate("""(fields) => {
+                    document.querySelectorAll('input[name="field[]"]').forEach(cb => {
+                        cb.checked = fields.includes(cb.value);
+                    });
+                }""", self.fields)
+                logger.debug("Set fields: %s", self.fields)
 
             # Submit and wait for result page
             logger.debug("Submitting form...")

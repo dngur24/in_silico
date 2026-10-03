@@ -16,10 +16,9 @@ This parser handles:
 from __future__ import annotations
 
 import re
-from typing import Optional
+from typing import Optional, Any
 
 from bs4 import BeautifulSoup
-
 
 class Parser:
     """
@@ -53,17 +52,17 @@ class Parser:
         soup = BeautifulSoup(html, "lxml")
 
         # ── 1. Table-based parsing ────────────────────────────────────────
-        score, label = self._parse_table(soup)
+        score, label, properties = self._parse_table(soup)
         if score is not None or label is not None:
-            return score, label
+            return score, label, properties
 
         # ── 2. Regex fallback on plain text ──────────────────────────────
         text = soup.get_text(separator=" ")
-        return self._regex_score(text), self._regex_label(text)
+        return self._regex_score(text), self._regex_label(text), {}
 
     def parse_all(
         self, html: str
-    ) -> list[tuple[str, Optional[float], Optional[str]]]:
+    ) -> list[tuple[str, Optional[float], Optional[str], dict[str, Any]]]:
         """
         Extract all result rows: list of (seq_id, score, label).
         """
@@ -75,7 +74,7 @@ class Parser:
             if len(rows) < 2:
                 continue
 
-            header_idx, col_id, col_score, col_label = self._find_header(rows)
+            header_idx, col_id, col_score, col_label, properties_cols = self._find_header(rows)
             if header_idx is None:
                 continue
 
@@ -91,7 +90,16 @@ class Parser:
                     else None
                 )
                 label = self._derive_label(score, cells, col_label)
-                results.append((seq_id, score, label))
+
+
+                properties = {}
+                for col_idx, prop_name in properties_cols.items():
+                    if col_idx < len(cells):
+                        val = cells[col_idx]
+                        num = self._safe_float(val)
+                        properties[prop_name] = num if num is not None else cells[col_idx]
+                
+                results.append((seq_id, score, label, properties))
 
         return results
 
@@ -101,14 +109,14 @@ class Parser:
 
     def _parse_table(
         self, soup: BeautifulSoup
-    ) -> tuple[Optional[float], Optional[str]]:
+    ) -> tuple[Optional[float], Optional[str], dict[str, Any]]:
         """Extract (score, label) from the first valid data row."""
         for table in soup.find_all("table"):
             rows = table.find_all("tr")
             if len(rows) < 2:
                 continue
 
-            header_idx, col_id, col_score, col_label = self._find_header(rows)
+            header_idx, col_id, col_score, col_label, properties_cols = self._find_header(rows)
             if header_idx is None:
                 continue
 
@@ -123,48 +131,68 @@ class Parser:
                     else None
                 )
                 label = self._derive_label(score, cells, col_label)
-                if score is not None or label is not None:
-                    return score, label
 
-        return None, None
+                properties = {}
+                for col_idx, prop_name in properties_cols.items():
+                    if col_idx < len(cells):
+                        val_str = cells[col_idx]
+                        num_val = self._safe_float(val_str)
+                        properties[prop_name] = num_val if num_val is not None else val_str
+                                   
+
+                if score is not None or label is not None:
+                    return score, label, properties
+
+        return None, None, {}
 
     def _find_header(
         self, rows: list
-    ) -> tuple[Optional[int], Optional[int], Optional[int], Optional[int]]:
+    ) -> tuple[Optional[int], Optional[int], Optional[int], Optional[int], dict[int, str]]:
         """
         Locate header row with Score and Prediction columns.
 
         AntiTbPred columns: ID | Seq | Score | Prediction | ...
 
-        Returns (header_row_idx, col_id, col_score, col_label).
+        Returns (header_row_idx, col_id, col_score, col_label, properties_cols).
         """
         for i, row in enumerate(rows):
-            cells = [
-                td.get_text(strip=True).lower()
-                for td in row.find_all(["td", "th"])
-            ]
+            th_cells = row.find_all(["th", "th"])
+            cells_lower = [tc.get_text(strip=True).lower() for tc in th_cells]
+            cells_orig = [td.get_text(strip=True) for td in th_cells]
 
-            has_score = any("score" in c for c in cells)
-            has_pred  = any("predict" in c or "label" in c for c in cells)
+            has_score = any("score" in c for c in cells_lower)
+            has_pred  = any("predict" in c or "label" in c for c in cells_lower)
+            if not (has_score or has_pred):
+                continue
+
+            has_score = any("score" in c for c in cells_lower)
+            has_pred  = any("predict" in c or "label" in c for c in cells_lower)
             if not (has_score or has_pred):
                 continue
 
             col_id = next(
-                (j for j, c in enumerate(cells) if c in ("id", "name", "seq_id")), None
+                (j for j, c in enumerate(cells_lower) if c in ("id", "name", "seq_id")), None
             )
             col_score = next(
-                (j for j, c in enumerate(cells) if "score" in c and "steric" not in c),
+                (j for j, c in enumerate(cells_lower) if "score" in c and "steric" not in c),
                 None,
             )
             col_label = next(
-                (j for j, c in enumerate(cells)
+                (j for j, c in enumerate(cells_lower)
                  if "predict" in c or "label" in c or "class" in c),
                 None,
             )
-            return i, col_id, col_score, col_label
+            col_seq = next((j for j,c in enumerate(cells_lower) if "seq" in c and c != "seq_id"), None)
+            
+            exclude_indices = {col_id, col_score, col_label, col_seq}
+            properties_cols = {}
+            for j, orig_name in enumerate(cells_orig):
+                if j not in exclude_indices and orig_name:
+                    properties_cols[j] = orig_name
 
-        return None, None, None, None
+            return i, col_id, col_score, col_label, properties_cols
 
+        return None, None, None, None, {}
     # ------------------------------------------------------------------
     # Label derivation
     # ------------------------------------------------------------------

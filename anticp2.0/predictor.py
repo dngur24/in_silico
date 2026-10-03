@@ -224,7 +224,16 @@ class Predictor:
         """
         all_results: list[PredictionResult] = []
 
-        for i, (name, peptide) in enumerate(items):
+        normalized_items: list[tuple[str, str]] = []
+        for i, item in enumerate(items):
+            if isinstance(item, str):
+                normalized_items.append((f"seq{i+1}", item))
+            elif isinstance(item, (list, tuple)) and len(item) == 2:
+                normalized_items.append((str(item[0]), str(item[1])))
+            else:
+                normalized_items.append((f"seq{i+1}", str(item)))
+
+        for i, (name, peptide) in enumerate(normalized_items):
             if i > 0:
                 time.sleep(self.inter_request_delay)
 
