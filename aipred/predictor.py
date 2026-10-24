@@ -191,20 +191,24 @@ class Predictor:
         The form accepts plain sequence or FASTA format. We send a minimal
         FASTA entry so the server can identify the sequence unambiguously.
         """
+        from utils.security import build_allowed_hosts, safe_request_text
+
         # Server requires CRLF line endings to recognize valid FASTA format
         fasta_input = f">peptide\r\n{peptide}"
 
         payload = {"Sequence": fasta_input}
+        allowed_hosts = build_allowed_hosts(_BASE_URL)
 
         logger.debug("POST %s  payload=%s", _PREDICT_URL, payload)
 
-        response = self._session.post(
+        return safe_request_text(
+            self._session,
+            "POST",
             _PREDICT_URL,
-            data=payload,
+            allowed_hosts=allowed_hosts,
             timeout=self.timeout,
+            data=payload,
         )
-        response.raise_for_status()
-        return response.text
 
     def _validate(self, peptide: str) -> Optional[str]:
         """

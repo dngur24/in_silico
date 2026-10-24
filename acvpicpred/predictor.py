@@ -130,7 +130,7 @@ class Predictor:
     def predict(
         self,
         peptide:  str,
-        pdb_path: Union[str, Path],
+        pdb_path: Optional[Union[str, Path]] = None,
     ) -> PredictionResult:
         """
         Predict the anti-coronavirus activity of a single peptide.
@@ -139,74 +139,85 @@ class Predictor:
         ----------
         peptide : str
             Amino-acid sequence (natural amino acids only).
-        pdb_path : str | Path
-            Path to the corresponding PDB structure file.
+        pdb_path : str | Path | None
+            Path to the corresponding PDB structure file. When ``None``,
+            an idealized 3D peptide structure (.pdb) is auto-generated
+            in a temporary file and cleaned up after submission.
 
         Returns
         -------
         PredictionResult
             ``.success`` is ``False`` and ``.error`` is set on failure.
         """
-        peptide  = peptide.strip().upper()
-        pdb_path = Path(pdb_path)
+        from .pdb_generator import write_temp_peptide_pdb
 
-        # ── Validation ────────────────────────────────────────────────────────
-        validation_error = self._validate(peptide, pdb_path)
-        if validation_error:
-            logger.warning("Validation failed for '%s': %s", peptide, validation_error)
-            return self._error_result(peptide, pdb_path, validation_error)
+        peptide = peptide.strip().upper()
+        temp_pdb: Optional[Path] = None
 
-        # ── Submit ────────────────────────────────────────────────────────────
         try:
-            html = self._submit(peptide, pdb_path)
-        except Exception as exc:  # noqa: BLE001
-            logger.error("Request failed for '%s': %s", peptide, exc)
-            return self._error_result(peptide, pdb_path, str(exc))
+            if pdb_path is None:
+                try:
+                    temp_pdb = write_temp_peptide_pdb(peptide)
+                    resolved_pdb = temp_pdb
+                except Exception as exc:  # noqa: BLE001
+                    return self._error_result(peptide, Path("auto.pdb"), str(exc))
+            else:
+                resolved_pdb = Path(pdb_path)
 
-        # ── Parse ─────────────────────────────────────────────────────────────
-        predicted_value, label = self._parser.parse(html)
-        result = PredictionResult(
-            peptide=peptide,
-            pdb_path=str(pdb_path),
-            virus=self.virus.value,
-            assay=self.assay.value,
-            value_type=self.value_type.value,
-            unit=self.unit.value,
-            predicted_value=predicted_value,
-            label=label,
-            raw_html=html,
-        )
-        logger.info(
-            "Predicted '%s' → label=%s value=%s", peptide, label, predicted_value
-        )
-        return result
+            # ── Validation ────────────────────────────────────────────────────
+            validation_error = self._validate(peptide, resolved_pdb)
+            if validation_error:
+                logger.warning("Validation failed for '%s': %s", peptide, validation_error)
+                return self._error_result(peptide, resolved_pdb, validation_error)
+
+            # ── Submit ────────────────────────────────────────────────────────
+            try:
+                html = self._submit(peptide, resolved_pdb)
+            except Exception as exc:  # noqa: BLE001
+                logger.error("Request failed for '%s': %s", peptide, exc)
+                return self._error_result(peptide, resolved_pdb, str(exc))
+
+            # ── Parse ─────────────────────────────────────────────────────────
+            predicted_value, label = self._parser.parse(html)
+            result = PredictionResult(
+                peptide=peptide,
+                pdb_path="auto-generated" if temp_pdb is not None else str(resolved_pdb),
+                virus=self.virus.value,
+                assay=self.assay.value,
+                value_type=self.value_type.value,
+                unit=self.unit.value,
+                predicted_value=predicted_value,
+                label=label,
+                raw_html=html,
+            )
+            logger.info(
+                "Predicted '%s' → label=%s value=%s", peptide, label, predicted_value
+            )
+            return result
+        finally:
+            if temp_pdb is not None:
+                temp_pdb.unlink(missing_ok=True)
 
     def predict_batch(
         self,
-        items: list[tuple[str, Union[str, Path]]],
+        items: list[Union[str, tuple[str, Optional[Union[str, Path]]]]],
         *,
         on_error: str = "continue",
     ) -> list[PredictionResult]:
         """
-        Predict a list of (peptide, pdb_path) pairs sequentially.
-
-        Parameters
-        ----------
-        items : list of (peptide_str, pdb_path) tuples
-        on_error : {'continue', 'raise'}
-            ``'continue'`` (default) stores the error and moves on.
-            ``'raise'`` re-raises immediately.
-
-        Returns
-        -------
-        list[PredictionResult]
-            One result per input pair, in the same order.
+        Predict a list of peptide sequences (auto-generating PDBs) or
+        ``(peptide, pdb_path)`` pairs sequentially.
         """
         results: list[PredictionResult] = []
 
-        for i, (peptide, pdb_path) in enumerate(items):
+        for i, item in enumerate(items):
             if i > 0:
                 time.sleep(self.inter_request_delay)
+
+            if isinstance(item, tuple):
+                peptide, pdb_path = item
+            else:
+                peptide, pdb_path = item, None
 
             result = self.predict(peptide, pdb_path)
 
@@ -233,7 +244,13 @@ class Predictor:
         The server may use a meta-refresh redirect; we follow it if present.
         """
         import re as _re
+        from utils.security import (
+            build_allowed_hosts,
+            resolve_safe_redirect,
+            safe_request_text,
+        )
 
+        allowed_hosts = build_allowed_hosts(_BASE_URL)
         with pdb_path.open("rb") as pdb_file:
             files = {
                 "upload_file": (pdb_path.name, pdb_file, "chemical/x-pdb"),
@@ -252,36 +269,37 @@ class Predictor:
                          self.virus.value, self.assay.value,
                          self.value_type.value, self.unit.value)
 
-            response = self._session.post(
+            first_html = safe_request_text(
+                self._session,
+                "POST",
                 _PREDICT_URL,
+                allowed_hosts=allowed_hosts,
+                timeout=self.timeout,
                 data=data,
                 files=files,
-                timeout=self.timeout,
             )
 
-        response.raise_for_status()
-
-        # ── Follow meta-refresh redirect if present ───────────────────────────
+        # ── Follow validated meta-refresh redirect if present ─────────────────
         m = _re.search(
             r"content=['\"]0;url=([^'\"]+)['\"]",
-            response.text,
+            first_html,
             _re.IGNORECASE,
         )
         if not m:
             logger.debug("No meta-refresh; returning direct response.")
-            return response.text
+            return first_html
 
         redirect_path = m.group(1)
-        result_url = (
-            redirect_path
-            if redirect_path.startswith("http")
-            else f"{_BASE_URL}/{redirect_path.lstrip('/')}"
-        )
+        result_url = resolve_safe_redirect(redirect_path, _BASE_URL, allowed_hosts)
 
         logger.debug("GET result page: %s", result_url)
-        result_response = self._session.get(result_url, timeout=self.timeout)
-        result_response.raise_for_status()
-        return result_response.text
+        return safe_request_text(
+            self._session,
+            "GET",
+            result_url,
+            allowed_hosts=allowed_hosts,
+            timeout=self.timeout,
+        )
 
     def _validate(self, peptide: str, pdb_path: Path) -> Optional[str]:
         """

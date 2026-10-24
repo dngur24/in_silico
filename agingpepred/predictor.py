@@ -192,40 +192,55 @@ class Predictor:
         The server requires a real browser context (403 on plain HTTP requests).
         """
         from playwright.sync_api import sync_playwright
+        from utils.security import (
+            DEFAULT_MAX_RESPONSE_BYTES,
+            build_allowed_hosts,
+            create_hardened_playwright_page,
+            validate_safe_url,
+        )
 
+        allowed_hosts = build_allowed_hosts(_BASE_URL)
         fasta = f">peptide\n{peptide}"
 
         with sync_playwright() as pw:
             browser = pw.chromium.launch(headless=self.headless)
-            context = browser.new_context(
-                user_agent=(
-                    "Mozilla/5.0 (X11; Linux x86_64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/124.0.0.0 Safari/537.36"
+            try:
+                _context, page = create_hardened_playwright_page(
+                    browser,
+                    allowed_hosts=allowed_hosts,
+                    user_agent=(
+                        "Mozilla/5.0 (X11; Linux x86_64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/124.0.0.0 Safari/537.36"
+                    ),
                 )
-            )
-            page = context.new_page()
 
-            logger.debug("Navigating to form page: %s", _FORM_URL)
-            page.goto(_FORM_URL, timeout=self.timeout, wait_until="networkidle")
+                logger.debug("Navigating to form page: %s", _FORM_URL)
+                page.goto(_FORM_URL, timeout=self.timeout, wait_until="networkidle")
+                validate_safe_url(page.url, allowed_hosts)
 
-            # Fill the textarea with FASTA sequence
-            page.fill("textarea[name='sequences']", fasta)
-            logger.debug("Filled sequences textarea with: %s", fasta)
+                # Fill the textarea with FASTA sequence
+                page.fill("textarea[name='sequences']", fasta)
+                logger.debug("Filled sequences textarea with: %s", fasta)
 
-            # Select the model radio button
-            page.check(f"input[name='model'][value='{self.model}']")
-            logger.debug("Selected model: %s", self.model)
+                # Select the model radio button
+                page.check(f"input[name='model'][value='{self.model}']")
+                logger.debug("Selected model: %s", self.model)
 
-            # Submit the form and wait for result page to load
-            logger.debug("Submitting form to %s", _ACTION_URL)
-            with page.expect_navigation(timeout=self.timeout, wait_until="networkidle"):
-                page.click("button[type='submit']")
+                # Submit the form and wait for result page to load
+                logger.debug("Submitting form to %s", _ACTION_URL)
+                with page.expect_navigation(timeout=self.timeout, wait_until="networkidle"):
+                    page.click("button[type='submit']")
 
-            result_html = page.content()
-            logger.debug("Result URL: %s | HTML length: %d", page.url, len(result_html))
-
-            browser.close()
+                validate_safe_url(page.url, allowed_hosts)
+                result_html = page.content()
+                if len(result_html.encode("utf-8", errors="ignore")) > DEFAULT_MAX_RESPONSE_BYTES:
+                    raise ValueError(
+                        f"Result page exceeded safety limit ({DEFAULT_MAX_RESPONSE_BYTES} bytes)"
+                    )
+                logger.debug("Result URL: %s | HTML length: %d", page.url, len(result_html))
+            finally:
+                browser.close()
 
         return result_html
 

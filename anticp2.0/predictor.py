@@ -296,7 +296,13 @@ class Predictor:
         The server may issue a meta-refresh redirect; we follow it if present.
         """
         import re as _re
+        from utils.security import (
+            build_allowed_hosts,
+            resolve_safe_redirect,
+            safe_request_text,
+        )
 
+        allowed_hosts = build_allowed_hosts(_BASE_URL)
         data = {
             "seq":    fasta,
             "method": self.method.value,
@@ -309,34 +315,36 @@ class Predictor:
             _SUBMIT_URL, self.method.name, self.threshold.value,
         )
 
-        response = self._session.post(
+        first_html = safe_request_text(
+            self._session,
+            "POST",
             _SUBMIT_URL,
-            data=data,
+            allowed_hosts=allowed_hosts,
             timeout=self.timeout,
+            data=data,
         )
-        response.raise_for_status()
 
-        # ── Follow meta-refresh redirect if present ───────────────────────────
+        # ── Follow validated meta-refresh redirect if present ─────────────────
         m = _re.search(
             r"content=['\"]0;url=([^'\"]+)['\"]",
-            response.text,
+            first_html,
             _re.IGNORECASE,
         )
         if not m:
             logger.debug("No meta-refresh; returning direct response.")
-            return response.text
+            return first_html
 
         redirect_path = m.group(1)
-        result_url = (
-            redirect_path
-            if redirect_path.startswith("http")
-            else f"{_BASE_URL}/{redirect_path.lstrip('/')}"
-        )
+        result_url = resolve_safe_redirect(redirect_path, _BASE_URL, allowed_hosts)
 
         logger.debug("GET result page: %s", result_url)
-        result_response = self._session.get(result_url, timeout=self.timeout)
-        result_response.raise_for_status()
-        return result_response.text
+        return safe_request_text(
+            self._session,
+            "GET",
+            result_url,
+            allowed_hosts=allowed_hosts,
+            timeout=self.timeout,
+        )
 
     def _validate_sequence(self, peptide: str) -> Optional[str]:
         """

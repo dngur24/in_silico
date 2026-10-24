@@ -220,7 +220,14 @@ class Predictor:
         7. Return page.content().
         """
         from playwright.sync_api import sync_playwright
+        from utils.security import (
+            DEFAULT_MAX_RESPONSE_BYTES,
+            build_allowed_hosts,
+            create_hardened_playwright_page,
+            validate_safe_url,
+        )
 
+        allowed_hosts = build_allowed_hosts(_BASE_URL)
         fasta = f">peptide\n{peptide}"
         threshold_str = str(self.threshold)
         # Normalize: 0.0 → "0", 0.5 → "0.5"
@@ -229,63 +236,75 @@ class Predictor:
 
         with sync_playwright() as pw:
             browser = pw.chromium.launch(headless=self.headless)
-            context = browser.new_context(
-                user_agent=(
-                    "Mozilla/5.0 (X11; Linux x86_64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/124.0.0.0 Safari/537.36"
+            try:
+                _context, page = create_hardened_playwright_page(
+                    browser,
+                    allowed_hosts=allowed_hosts,
+                    user_agent=(
+                        "Mozilla/5.0 (X11; Linux x86_64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/124.0.0.0 Safari/537.36"
+                    ),
                 )
-            )
-            page = context.new_page()
 
-            logger.debug("Navigating to form: %s", _FORM_URL)
-            page.goto(_FORM_URL, timeout=self.timeout, wait_until="networkidle")
+                logger.debug("Navigating to form: %s", _FORM_URL)
+                page.goto(_FORM_URL, timeout=self.timeout, wait_until="networkidle")
+                validate_safe_url(page.url, allowed_hosts)
 
-            # Fill FASTA sequence
-            page.fill("textarea[name='seq']", fasta)
-            logger.debug("Filled sequence: %s", fasta)
+                # Fill FASTA sequence
+                page.fill("textarea[name='seq']", fasta)
+                logger.debug("Filled sequence: %s", fasta)
 
-            # Select prediction method radio
-            radio_id = f"id_radio{self.method.value}"
-            page.check(f"input[id='{radio_id}']")
-            logger.debug("Selected method: %s (radio: %s)", self.method.name, radio_id)
+                # Select prediction method radio
+                radio_id = f"id_radio{self.method.value}"
+                page.check(f"input[id='{radio_id}']")
+                logger.debug("Selected method: %s (radio: %s)", self.method.name, radio_id)
 
-            # Set threshold dropdown (visible dropdown depends on selected method)
-            # All divs contain a <select name="thval"> — select the visible one
-            page.evaluate(
-                f"""
-                document.querySelectorAll('select[name="thval"]').forEach(sel => {{
-                    for (let opt of sel.options) {{
-                        if (opt.value === '{threshold_str}') {{
-                            sel.value = '{threshold_str}';
-                        }}
-                    }}
-                }});
-                """
-            )
-            logger.debug("Set threshold: %s", threshold_str)
+                # Set threshold dropdown safely via parameterized argument
+                page.evaluate(
+                    """(val) => {
+                        document.querySelectorAll('select[name="thval"]').forEach(sel => {
+                            for (const opt of sel.options) {
+                                if (opt.value === val) {
+                                    sel.value = val;
+                                }
+                            }
+                        });
+                    }""",
+                    threshold_str,
+                )
+                logger.debug("Set threshold: %s", threshold_str)
 
-            # Set the checkboxes for the requested fields on the form page
-            if self.fields:
-                page.evaluate("""(fields) => {
-                    document.querySelectorAll('input[name="field[]"]').forEach(cb => {
-                        cb.checked = fields.includes(cb.value);
-                    });
-                }""", self.fields)
-                logger.debug("Set fields: %s", self.fields)
+                # Set the checkboxes for the requested fields on the form page
+                if self.fields:
+                    page.evaluate(
+                        """(fields) => {
+                            document.querySelectorAll('input[name="field[]"]').forEach(cb => {
+                                cb.checked = fields.includes(cb.value);
+                            });
+                        }""",
+                        self.fields,
+                    )
+                    logger.debug("Set fields: %s", self.fields)
 
-            # Submit and wait for result page
-            logger.debug("Submitting form...")
-            with page.expect_navigation(timeout=self.timeout, wait_until="networkidle"):
-                page.click("input[type='submit']")
+                # Submit and wait for result page
+                logger.debug("Submitting form...")
+                with page.expect_navigation(timeout=self.timeout, wait_until="networkidle"):
+                    page.click("input[type='submit']")
 
-            logger.debug("Result page URL: %s", page.url)
+                validate_safe_url(page.url, allowed_hosts)
+                logger.debug("Result page URL: %s", page.url)
 
-            # Wait for Bootstrap-table JS to populate the table
-            time.sleep(self.post_submit_wait)
+                # Wait for Bootstrap-table JS to populate the table
+                time.sleep(self.post_submit_wait)
 
-            html = page.content()
-            browser.close()
+                html = page.content()
+                if len(html.encode("utf-8", errors="ignore")) > DEFAULT_MAX_RESPONSE_BYTES:
+                    raise ValueError(
+                        f"Result page exceeded safety limit ({DEFAULT_MAX_RESPONSE_BYTES} bytes)"
+                    )
+            finally:
+                browser.close()
 
         return html
 

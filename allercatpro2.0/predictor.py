@@ -444,9 +444,16 @@ class Predictor:
         handling code correctly delimits the file content from the rest
         of the multipart body.
         """
+        from utils.security import build_allowed_hosts, safe_request_text
+
+        allowed_hosts = build_allowed_hosts(_BASE_URL)
         logger.debug("POST %s  (%d chars FASTA)", _SUBMIT_URL, len(fasta_block))
-        response = self._session.post(
+        return safe_request_text(
+            self._session,
+            "POST",
             _SUBMIT_URL,
+            allowed_hosts=allowed_hosts,
+            timeout=self.timeout,
             data={"seq": ""},           # empty textarea (required field)
             files={
                 "seqfile": (
@@ -455,10 +462,7 @@ class Predictor:
                     "text/plain",
                 ),
             },
-            timeout=self.timeout,
         )
-        response.raise_for_status()
-        return response.text
 
 
     @staticmethod

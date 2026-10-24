@@ -219,7 +219,13 @@ class Predictor:
           2. GET  → submitfreq.php?ran=XXXXX  (actual result page)
         """
         import re as _re
+        from utils.security import (
+            build_allowed_hosts,
+            resolve_safe_redirect,
+            safe_request_text,
+        )
 
+        allowed_hosts = build_allowed_hosts(_BASE_URL)
         payload = {
             "seq": peptide,
             "method": self.method.value,
@@ -227,32 +233,34 @@ class Predictor:
         }
         logger.debug("POST %s  payload=%s", _PREDICT_URL, payload)
 
-        # ── Step 1: POST ─────────────────────────────────────────────────
-        response = self._session.post(
+        # ── Step 1: POST (with host validation & response size ceiling) ──
+        first_html = safe_request_text(
+            self._session,
+            "POST",
             _PREDICT_URL,
-            data=payload,
+            allowed_hosts=allowed_hosts,
             timeout=self.timeout,
+            data=payload,
         )
-        response.raise_for_status()
 
-        # ── Step 2: Follow meta-refresh redirect ─────────────────────────
+        # ── Step 2: Follow validated meta-refresh redirect ───────────────
         #   <meta http-equiv='refresh' content='0;url=submitfreq.php?ran=XXXXX' />
-        m = _re.search(r"content=['\"]0;url=([^'\"]+)['\"]", response.text, _re.IGNORECASE)
+        m = _re.search(r"content=['\"]0;url=([^'\"]+)['\"]", first_html, _re.IGNORECASE)
         if not m:
             logger.warning("No meta-refresh redirect found in response; returning raw page.")
-            return response.text
+            return first_html
 
         redirect_path = m.group(1)
-        # Build absolute URL
-        if redirect_path.startswith("http"):
-            result_url = redirect_path
-        else:
-            result_url = f"{_BASE_URL}/{redirect_path}"
+        result_url = resolve_safe_redirect(redirect_path, _BASE_URL, allowed_hosts)
 
         logger.debug("GET result page: %s", result_url)
-        result_response = self._session.get(result_url, timeout=self.timeout)
-        result_response.raise_for_status()
-        return result_response.text
+        return safe_request_text(
+            self._session,
+            "GET",
+            result_url,
+            allowed_hosts=allowed_hosts,
+            timeout=self.timeout,
+        )
 
     def _validate(self, peptide: str) -> Optional[str]:
         """
