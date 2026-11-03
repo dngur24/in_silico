@@ -22,11 +22,11 @@ class Method(str, Enum):
         if not value:
             return cls.HYBRID
         norm = str(value).strip().lower().replace("-", "_").replace(" ", "_")
-        if norm in ("0", "aac", "aac_rf", "rf"):
+        if norm in ("0", "aac", "aac_rf", "aac_based_rf", "rf"):
             return cls.AAC_RF
         if norm in ("4", "hybrid"):
             return cls.HYBRID
-        raise ValueError(f"Unknown AlgPred 2.0 method '{value}'. Valid: 'Hybrid', 'AAC_RF'.")
+        raise ValueError(f"Unknown AlgPred 2.0 method '{value}'. Valid: 'Hybrid', 'AAC based RF'.")
 
 
 @dataclass

@@ -37,7 +37,7 @@ _DEFAULT_HEADERS = {
 @dataclass
 class PredictionResult:
     peptide: str
-    method: str = "Exact"
+    method: str = "Full Sequence"
     score: Optional[float] = None
     label: Optional[str] = None
     properties: Optional[dict[str, Any]] = None
@@ -89,16 +89,18 @@ class DBAASPClient:
             return data if isinstance(data, list) else []
         return payload if isinstance(payload, list) else []
 
-    def predict(self, sequence: str, *, method: str = "Exact") -> PredictionResult:
+    def predict(self, sequence: str, *, method: str = "Full Sequence") -> PredictionResult:
         """
         Check whether ``sequence`` is recorded as an antimicrobial/bioactive peptide in DBAASP v3.
 
         method:
-          - 'Exact'     : exact full-sequence match in DBAASP
-          - 'Substring' : any DBAASP entry containing ``sequence`` as a motif/subsequence
+          - 'Full Sequence'    (or legacy 'Exact' / 'full')     : exact full-sequence match in DBAASP
+          - 'Part of Sequence' (or legacy 'Substring' / 'part') : any DBAASP entry containing ``sequence`` as part of sequence
         """
         seq = self._clean(sequence)
-        mode = "Substring" if str(method).lower().startswith("sub") else "Exact"
+        norm_method = str(method or "").strip().lower()
+        is_part = norm_method.startswith("part") or norm_method.startswith("sub")
+        mode = "Part of Sequence" if is_part else "Full Sequence"
         err = self._validate(seq)
         if err:
             return PredictionResult(peptide=seq, method=mode, error=err)
@@ -120,8 +122,8 @@ class DBAASPClient:
                 it for it in items
                 if str(it.get("sequence") or "").strip().upper() == seq
             ]
-            matched = items if mode == "Substring" else exact_matches
-            hit_count = total_sub if mode == "Substring" else len(exact_matches)
+            matched = items if is_part else exact_matches
+            hit_count = total_sub if is_part else len(exact_matches)
 
             if hit_count > 0:
                 ids = [str(it.get("dbaaspId") or it.get("id")) for it in matched[:5] if it.get("dbaaspId") or it.get("id")]
@@ -131,7 +133,7 @@ class DBAASPClient:
                     "DBAASP IDs": ", ".join(ids) if ids else "-",
                     "Peptide Name": ", ".join(dict.fromkeys(names)) if names else "-",
                     "Synthesis": synth,
-                    "Subsequence Hits": total_sub,
+                    "Part of Sequence Hits": total_sub,
                 }
                 return PredictionResult(
                     peptide=seq,
@@ -147,14 +149,14 @@ class DBAASPClient:
                 method=mode,
                 score=0.0,
                 label="Not Found",
-                properties={"DBAASP IDs": "-", "Peptide Name": "-", "Synthesis": "-", "Subsequence Hits": total_sub},
+                properties={"DBAASP IDs": "-", "Peptide Name": "-", "Synthesis": "-", "Part of Sequence Hits": total_sub},
                 records=[],
             )
         except Exception as exc:  # noqa: BLE001
             logger.error("DBAASP lookup failed for '%s': %s", seq, exc)
             return PredictionResult(peptide=seq, method=mode, error=str(exc))
 
-    def predict_batch(self, sequences: list[str], *, method: str = "Exact") -> list[PredictionResult]:
+    def predict_batch(self, sequences: list[str], *, method: str = "Full Sequence") -> list[PredictionResult]:
         results: list[PredictionResult] = []
         for i, seq in enumerate(sequences):
             if i > 0:

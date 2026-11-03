@@ -256,9 +256,4 @@ class Predictor:
             return "Peptide sequence must not be empty."
         if not re.fullmatch(r"[A-Z]+", peptide):
             return f"Sequence contains invalid characters: '{peptide}'."
-        if len(peptide) < 5 or len(peptide) > 50:
-            return (
-                f"Sequence length {len(peptide)} is out of range. "
-                "Accepted: 5–50 residues."
-            )
         return None

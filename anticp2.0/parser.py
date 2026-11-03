@@ -49,6 +49,11 @@ class Parser:
         r"\b(Anti[- ]?Cancer\s*Peptide|Non\s*Anti[- ]?Cancer\s*Peptide)\b",
         re.IGNORECASE,
     )
+    _SERVER_ERROR_RE = re.compile(
+        r"(The\s+length\s+of\s+sequence[^<\n]+?(?:greater\s+than\s+or\s+equal\s+to\s+\d+\.|less\s+than\s+\d+\.)"
+        r"|Please\s+enter\s+valid[^<\n.]+?\.)",
+        re.IGNORECASE,
+    )
 
     # ─────────────────────────────────────────────────────────────────────────
 
@@ -87,16 +92,30 @@ class Parser:
             result if no table is found.
         """
         soup = BeautifulSoup(html, "lxml")
+        text = soup.get_text(separator=" ", strip=True)
+        server_error = self._extract_server_error(text)
 
         # ── 1. Table-based parsing ────────────────────────────────────────────
-        results = self._parse_table(soup, method, threshold)
+        results = self._parse_table(
+            soup,
+            method,
+            threshold,
+            fallback_name=peptide_name,
+            fallback_seq=peptide,
+            server_error=server_error,
+        )
         if results:
             return results
 
         # ── 2. Regex fallback on visible text ────────────────────────────────
-        text = soup.get_text(separator=" ")
         score = self._regex_score(text)
         label = self._regex_label(text)
+        error = None
+        if score is None and label is None:
+            error = (
+                server_error
+                or "AntiCP 2.0 did not return a valid prediction for this sequence and model."
+            )
 
         return [
             PredictionResult(
@@ -107,6 +126,7 @@ class Parser:
                 score=score,
                 label=label,
                 raw_html=html,
+                error=error,
             )
         ]
 
@@ -119,6 +139,10 @@ class Parser:
         soup: BeautifulSoup,
         method: str,
         threshold: str,
+        *,
+        fallback_name: str = "",
+        fallback_seq: str = "",
+        server_error: Optional[str] = None,
     ) -> list[PredictionResult]:
         """
         Locate the result table and extract one PredictionResult per data row.
@@ -134,8 +158,10 @@ class Parser:
             if header_idx is None:
                 continue
 
+            data_rows = rows[header_idx + 1:]
+            single_row = len(data_rows) == 1
             results: list[PredictionResult] = []
-            for row in rows[header_idx + 1:]:
+            for row in data_rows:
                 cells = [
                     td.get_text(strip=True)
                     for td in row.find_all(["td", "th"])
@@ -149,15 +175,24 @@ class Parser:
                 label = self._normalize_label(
                     self._get_cell(cells, cols.get("label")) or ""
                 )
+                row_error = None
+                if not seq or score is None or label is None:
+                    score = None
+                    label = None
+                    row_error = (
+                        server_error
+                        or f"Upstream AntiCP 2.0 server returned an empty prediction for method '{method}'."
+                    )
 
                 results.append(
                     PredictionResult(
-                        peptide_name=name or "",
-                        peptide=seq or "",
+                        peptide_name=name or (fallback_name if single_row else ""),
+                        peptide=seq or (fallback_seq if single_row else ""),
                         method=method,
                         threshold=threshold,
                         score=score,
                         label=label or None,
+                        error=row_error,
                     )
                 )
 
@@ -230,6 +265,13 @@ class Parser:
         m = self._LABEL_RE.search(text)
         return self._normalize_label(m.group(0)) if m else None
 
+    def _extract_server_error(self, text: str) -> Optional[str]:
+        """Extract upstream validation/error notice (e.g. minimum length warning)."""
+        m = self._SERVER_ERROR_RE.search(text)
+        if m:
+            return re.sub(r"\s+", " ", m.group(1)).strip()
+        return None
+
     # ------------------------------------------------------------------
     # Static helpers
     # ------------------------------------------------------------------
@@ -254,8 +296,8 @@ class Parser:
         if not label:
             return None
         lower = label.lower()
+        if "anti" not in lower and "cancer" not in lower:
+            return None
         if "non" in lower:
             return "Non Anti-Cancer Peptide"
-        if "anti" in lower or "cancer" in lower:
-            return "Anti-Cancer Peptide"
-        return label or None
+        return "Anti-Cancer Peptide"

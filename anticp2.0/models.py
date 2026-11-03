@@ -22,15 +22,65 @@ class PredictionMethod(str, Enum):
     """
     Prediction method options available on the AntiCP 2.0 form.
 
-    1 = Machine Learning (ML)
-    2 = Amino Acid Composition (AAC)
-    3 = Dipeptide Composition (DPC)
-    4 = Hybrid (AAC + DPC)
+    1 = Model 1 (Main dataset)
+    2 = Model 2 (Alternate dataset)
+    3 = Hybrid_DS1
+    4 = Hybrid_DS2
     """
-    ML      = "1"
-    AAC     = "2"
-    DPC     = "3"
-    HYBRID  = "4"
+    MODEL_1    = "1"
+    MODEL_2    = "2"
+    HYBRID_DS1 = "3"
+    HYBRID_DS2 = "4"
+
+    # Backward-compatible aliases
+    ML     = "1"
+    AAC    = "2"
+    DPC    = "3"
+    HYBRID = "4"
+
+    @property
+    def display_name(self) -> str:
+        return {
+            "1": "Model 1",
+            "2": "Model 2",
+            "3": "Hybrid_DS1",
+            "4": "Hybrid_DS2",
+        }[self.value]
+
+    @classmethod
+    def resolve(cls, value: "PredictionMethod | str | None") -> "PredictionMethod":
+        if isinstance(value, cls):
+            return value
+        if value is None or str(value).strip() == "":
+            return cls.MODEL_1
+        raw = str(value).strip()
+        alias_map = {
+            "1": cls.MODEL_1,
+            "model 1": cls.MODEL_1,
+            "model_1": cls.MODEL_1,
+            "model1": cls.MODEL_1,
+            "ml": cls.MODEL_1,
+            "2": cls.MODEL_2,
+            "model 2": cls.MODEL_2,
+            "model_2": cls.MODEL_2,
+            "model2": cls.MODEL_2,
+            "aac": cls.MODEL_2,
+            "3": cls.HYBRID_DS1,
+            "hybrid_ds1": cls.HYBRID_DS1,
+            "hybrid ds1": cls.HYBRID_DS1,
+            "dpc": cls.HYBRID_DS1,
+            "4": cls.HYBRID_DS2,
+            "hybrid_ds2": cls.HYBRID_DS2,
+            "hybrid ds2": cls.HYBRID_DS2,
+            "hybrid": cls.HYBRID_DS2,
+        }
+        resolved = alias_map.get(raw.lower())
+        if resolved is None:
+            raise ValueError(
+                f"Invalid AntiCP 2.0 method '{value}'. "
+                "Valid options: 'Model 1', 'Model 2', 'Hybrid_DS1', 'Hybrid_DS2'."
+            )
+        return resolved
 
 
 class ThresholdValue(str, Enum):
@@ -50,6 +100,25 @@ class ThresholdValue(str, Enum):
     T_0_8  = "0.8"
     T_0_9  = "0.9"
     T_1_0  = "1.0"
+
+    @classmethod
+    def resolve(cls, value: "ThresholdValue | float | str | None") -> "ThresholdValue":
+        if isinstance(value, cls):
+            return value
+        if value is None or str(value).strip() == "":
+            return cls.T_0_45
+        try:
+            num = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Invalid threshold '{value}'.") from exc
+        if abs(num - 0.45) < 1e-6:
+            return cls.T_0_45
+        formatted = f"{round(num, 1):.1f}"
+        for member in cls:
+            if member.value == formatted:
+                return member
+        valid = [e.value for e in cls]
+        raise ValueError(f"Invalid threshold '{value}'. Valid options: {valid}")
 
 
 # ──────────────────────────────────────────────────────────────────────────────

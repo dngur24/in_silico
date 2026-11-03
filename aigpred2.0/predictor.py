@@ -56,7 +56,7 @@ class Predictor:
 
     @property
     def method_label(self) -> str:
-        return "Hybrid" if self.method == Method.HYBRID else "AAC_RF"
+        return "Hybrid" if self.method == Method.HYBRID else "AAC based RF"
 
     def predict(self, peptide: str) -> PredictionResult:
         return self.predict_batch([peptide])[0]

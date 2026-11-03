@@ -70,7 +70,7 @@ class Predictor:
         - ``"3"`` / ``PredictionMethod.DPC``    → Dipeptide Composition
         - ``"4"`` / ``PredictionMethod.HYBRID`` → Hybrid (AAC + DPC)
     threshold : ThresholdValue | str
-        Score threshold for anti-cancer classification (default: 0.5).
+        Score threshold for anti-cancer classification (default: 0.45).
         Peptides with ML score >= threshold are labelled "Anti-Cancer Peptide".
     timeout : float
         HTTP request timeout in seconds (default: 120).
@@ -107,16 +107,18 @@ class Predictor:
 
     def __init__(
         self,
-        method:    Union[PredictionMethod, str] = PredictionMethod.ML,
-        threshold: Union[ThresholdValue,   str] = ThresholdValue.T_0_5,
+        method:    Union[PredictionMethod, str] = PredictionMethod.MODEL_1,
+        threshold: Union[ThresholdValue, float, str] = ThresholdValue.T_0_45,
         *,
+        fields:               Optional[list[str]] = None,
         timeout:              float = 120.0,
         max_retries:          int   = 3,
         retry_backoff:        float = 1.0,
         inter_request_delay:  float = 2.0,
     ) -> None:
-        self.method    = self._coerce(method,    PredictionMethod)
-        self.threshold = self._coerce(threshold, ThresholdValue)
+        self.method    = PredictionMethod.resolve(method)
+        self.threshold = ThresholdValue.resolve(threshold)
+        self.fields    = [str(f).strip() for f in fields if str(f).strip()] if fields is not None else None
 
         self.timeout             = timeout
         self.inter_request_delay = inter_request_delay
@@ -276,7 +278,7 @@ class Predictor:
             html,
             peptide_name=fallback_name,
             peptide=fallback_seq,
-            method=self.method.name,
+            method=self.method.display_name,
             threshold=self.threshold.value,
         )
 
@@ -303,16 +305,19 @@ class Predictor:
         )
 
         allowed_hosts = build_allowed_hosts(_BASE_URL)
-        data = {
-            "seq":    fasta,
-            "method": self.method.value,
-            "thval":  self.threshold.value,
-            "submit": "Submit",
-        }
+        data: list[tuple[str, str]] = [
+            ("seq",    fasta),
+            ("method", self.method.value),
+            ("thval",  self.threshold.value),
+        ]
+        if self.fields:
+            for field_id in self.fields:
+                data.append(("field[]", field_id))
+        data.append(("submit", "Submit"))
 
         logger.debug(
-            "POST %s  method=%s  threshold=%s",
-            _SUBMIT_URL, self.method.name, self.threshold.value,
+            "POST %s  method=%s  threshold=%s  fields=%s",
+            _SUBMIT_URL, self.method.display_name, self.threshold.value, self.fields,
         )
 
         first_html = safe_request_text(
@@ -322,6 +327,7 @@ class Predictor:
             allowed_hosts=allowed_hosts,
             timeout=self.timeout,
             data=data,
+            files={"uploadedfile": ("", b"", "application/octet-stream")},
         )
 
         # ── Follow validated meta-refresh redirect if present ─────────────────
@@ -368,7 +374,7 @@ class Predictor:
         return PredictionResult(
             peptide_name=name,
             peptide=peptide,
-            method=self.method.name,
+            method=self.method.display_name,
             threshold=self.threshold.value,
             error=error,
         )
